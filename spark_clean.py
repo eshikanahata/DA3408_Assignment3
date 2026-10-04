@@ -4,7 +4,7 @@ import sys
 import time
 from functools import reduce
 
-os.environ.setdefault("PYSPARK_PYTHON", sys.executable) 
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
 import pandas as pd
 from pyspark.sql import SparkSession, functions as F
@@ -54,11 +54,18 @@ def main():
         shutil.rmtree(args.out)
 
     t0 = time.perf_counter()
-    df = ingest(spark, args.data_dir)
-    if args.sample < 1.0:
-        df = df.sample(fraction=args.sample, seed=42)
 
-    df = df.dropna(subset=common.KEY_COLS).dropDuplicates()
+    df = ingest(spark, args.data_dir)
+
+    df = df.dropna(subset=common.KEY_COLS)
+    if args.sample < 1.0:
+        bucket = (
+            F.unix_timestamp("pickup_datetime") * 31
+            + F.col("PULocationID").cast("long") * 7
+            + F.col("DOLocationID").cast("long")
+        ) % common.SAMPLE_BUCKETS
+        df = df.filter(bucket < int(args.sample * common.SAMPLE_BUCKETS))
+    df = df.dropDuplicates()
     df = df.withColumn(
         "trip_time_sec",
         F.unix_timestamp("dropoff_datetime") - F.unix_timestamp("pickup_datetime"),
@@ -83,7 +90,7 @@ def main():
         df.withColumn("speed_mph", speed_udf("trip_miles", "trip_time_sec"))
         .filter(F.col("speed_mph").isNotNull())
         .withColumn("pickup_hour", F.hour("pickup_datetime"))
-        .withColumn("pickup_dow", F.dayofweek("pickup_datetime"))  # 1=Sun..7=Sat
+        .withColumn("pickup_dow", F.dayofweek("pickup_datetime"))
         .withColumn("is_weekend", F.col("pickup_dow").isin(1, 7).cast("int"))
         .select(*common.FINAL_COLS)
     )
@@ -91,7 +98,6 @@ def main():
     df.write.mode("overwrite").parquet(args.out)
     elapsed = time.perf_counter() - t0
 
-    # Post-run summary (NOT timed)
     out_df = spark.read.parquet(args.out)
     rows_out = out_df.count()
     hourly = (

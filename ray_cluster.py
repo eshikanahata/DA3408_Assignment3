@@ -10,8 +10,8 @@ p.add_argument("--cpus", type=int, default=2, help="CPUs per worker node")
 p.add_argument("--object-store-gb", type=float, default=2.0, help="object store per worker node")
 args = p.parse_args()
 
-cluster = Cluster(initialize_head=True, head_node_args={"num_cpus": 0, "include_dashboard": True}) 
-for _ in range(2):  
+cluster = Cluster(initialize_head=True, head_node_args={"num_cpus": 0, "include_dashboard": True})
+for _ in range(2):
     cluster.add_node(num_cpus=args.cpus, object_store_memory=int(args.object_store_gb * 1e9))
 cluster.wait_for_nodes()
 

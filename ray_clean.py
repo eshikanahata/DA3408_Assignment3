@@ -2,10 +2,12 @@ import os
 import shutil
 import sys
 import time
+
 import pandas as pd
 import ray
 import ray.data
 from ray.data.aggregate import Count, Mean
+
 import common
 
 BATCH = 100_000
@@ -21,10 +23,14 @@ def normalize(df: pd.DataFrame, cols: dict, source: str) -> pd.DataFrame:
     return df
 
 
-def cleanse(df: pd.DataFrame) -> pd.DataFrame:
+def cleanse(df: pd.DataFrame, sample: float = 1.0) -> pd.DataFrame:
     df = df.dropna(subset=common.KEY_COLS).copy()
     for c in common.ID_COLS:
         df[c] = df[c].astype("int64")
+    if sample < 1.0:
+        secs = df["pickup_datetime"].astype("datetime64[us]").to_numpy().astype("int64") // 1_000_000
+        bucket = (secs * 31 + df["PULocationID"].to_numpy() * 7 + df["DOLocationID"].to_numpy()) % common.SAMPLE_BUCKETS
+        df = df[bucket < int(sample * common.SAMPLE_BUCKETS)].copy()
     df["row_hash"] = pd.util.hash_pandas_object(
         df[common.KEY_COLS + ["source"]], index=False
     ).astype("int64")
@@ -95,9 +101,9 @@ def main():
     t0 = time.perf_counter()
 
     ds = ingest(args.data_dir)
-    if args.sample < 1.0:
-        ds = ds.random_sample(args.sample, seed=42)
-    ds = ds.map_batches(cleanse, batch_format="pandas", batch_size=BATCH)
+
+    ds = ds.map_batches(cleanse, batch_format="pandas", batch_size=BATCH,
+                        fn_kwargs={"sample": args.sample})
     try:
         ds = ds.repartition(args.partitions, keys=["row_hash"], shuffle=True)
         ds = ds.map_batches(drop_dupes, batch_format="pandas", batch_size=None)

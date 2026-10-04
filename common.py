@@ -2,10 +2,12 @@ import argparse
 import glob
 import json
 import os
+
 import pandas as pd
 import pyarrow.parquet as pq
+
 SOURCES = {
-    "fhvhv": { 
+    "fhvhv": {
         "pickup_datetime": "pickup_datetime",
         "dropoff_datetime": "dropoff_datetime",
         "PULocationID": "PULocationID",
@@ -13,7 +15,7 @@ SOURCES = {
         "trip_miles": "trip_miles",
         "base_passenger_fare": "fare",
     },
-    "yellow": { 
+    "yellow": {
         "tpep_pickup_datetime": "pickup_datetime",
         "tpep_dropoff_datetime": "dropoff_datetime",
         "PULocationID": "PULocationID",
@@ -26,9 +28,10 @@ SOURCES = {
 DT_COLS = ["pickup_datetime", "dropoff_datetime"]
 ID_COLS = ["PULocationID", "DOLocationID"]
 NUM_COLS = ["trip_miles", "fare"]
-KEY_COLS = DT_COLS + ID_COLS + NUM_COLS  
+KEY_COLS = DT_COLS + ID_COLS + NUM_COLS
 
-MAX_SPEED_MPH = 100.0  
+SAMPLE_BUCKETS = 10_000
+MAX_SPEED_MPH = 100.0
 
 FINAL_COLS = [
     "pickup_datetime", "dropoff_datetime", "PULocationID", "DOLocationID",
@@ -77,12 +80,11 @@ def save_result(engine, result):
 def add_spark_args(p):
     p.add_argument("--master", default="local[*]", help="e.g. spark://127.0.0.1:7077")
     p.add_argument("--memory", default="4g", help="driver memory")
-    p.add_argument("--executor-memory", default="3g", help="memory per executor")
-    p.add_argument("--executor-cores", type=int, default=2, help="cores per executor")
+    p.add_argument("--executor-memory", default="3g", help="memory per executor (must fit in worker memory)")
+    p.add_argument("--executor-cores", type=int, default=2, help="cores per executor (= cores per worker)")
 
 
 def make_spark(app, args):
-    """One place to build the SparkSession so pipeline + UDF benchmark match."""
     import sys
     from pyspark.sql import SparkSession
     spark = (
@@ -98,5 +100,5 @@ def make_spark(app, args):
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
-    spark.sparkContext.addPyFile(os.path.abspath("common.py"))  
+    spark.sparkContext.addPyFile(os.path.abspath("common.py"))
     return spark
