@@ -3,6 +3,7 @@ import shutil
 import sys
 import time
 
+import numpy as np
 import pandas as pd
 import ray
 import ray.data
@@ -23,14 +24,20 @@ def normalize(df: pd.DataFrame, cols: dict, source: str) -> pd.DataFrame:
     return df
 
 
-def cleanse(df: pd.DataFrame, sample: float = 1.0) -> pd.DataFrame:
+def cleanse(df: pd.DataFrame, sample: float = 1.0, passes: int = 1, pass_id: int = 0) -> pd.DataFrame:
     df = df.dropna(subset=common.KEY_COLS).copy()
     for c in common.ID_COLS:
         df[c] = df[c].astype("int64")
-    if sample < 1.0:
+    if sample < 1.0 or passes > 1:
         secs = df["pickup_datetime"].astype("datetime64[us]").to_numpy().astype("int64") // 1_000_000
-        bucket = (secs * 31 + df["PULocationID"].to_numpy() * 7 + df["DOLocationID"].to_numpy()) % common.SAMPLE_BUCKETS
-        df = df[bucket < int(sample * common.SAMPLE_BUCKETS)].copy()
+        pu = df["PULocationID"].to_numpy()
+        do = df["DOLocationID"].to_numpy()
+        keep = np.ones(len(df), dtype=bool)
+        if sample < 1.0:
+            keep &= ((secs * 31 + pu * 7 + do) % common.SAMPLE_BUCKETS) < int(sample * common.SAMPLE_BUCKETS)
+        if passes > 1:
+            keep &= ((secs * 131 + pu * 37 + do * 11) % passes) == pass_id
+        df = df[keep].copy()
     df["row_hash"] = pd.util.hash_pandas_object(
         df[common.KEY_COLS + ["source"]], index=False
     ).astype("int64")
@@ -81,7 +88,9 @@ def main():
     p = common.base_parser("Ray pipeline")
     p.add_argument("--address", default=None, help="Ray cluster address (default: start local Ray)")
     p.add_argument("--cpus", type=int, default=None, help="CPUs for local Ray")
+    p.add_argument("--passes", type=int, default=4, help="dedup/transform/write in this many hash-bucket passes (lower memory)")
     args = p.parse_args()
+    common.absolutize(args)
 
     if args.address:
         ray.init(address=args.address, runtime_env={
@@ -97,25 +106,33 @@ def main():
     zones = pd.read_csv(args.zones, keep_default_na=False)
     if os.path.exists(args.out):
         shutil.rmtree(args.out)
+    os.makedirs(args.out)
+
+    per_pass_partitions = max(1, args.partitions // args.passes)
 
     t0 = time.perf_counter()
 
-    ds = ingest(args.data_dir)
+    for i in range(args.passes):
+        print(f"[RAY] pass {i + 1}/{args.passes}", flush=True)
+        ds = ingest(args.data_dir)
+        ds = ds.map_batches(cleanse, batch_format="pandas", batch_size=BATCH,
+                            fn_kwargs={"sample": args.sample, "passes": args.passes, "pass_id": i})
+        try:
+            ds = ds.repartition(per_pass_partitions, keys=["row_hash"], shuffle=True)
+            ds = ds.map_batches(drop_dupes, batch_format="pandas", batch_size=None)
+        except (TypeError, ValueError):
+            print("WARNING: this Ray version lacks repartition(keys=...). "
+                  "Only per-block dedup is done. Upgrade: pip install -U 'ray[data]'")
+            ds = ds.map_batches(drop_dupes, batch_format="pandas", batch_size=BATCH)
+        ds = ds.map_batches(transform, batch_format="pandas", batch_size=BATCH,
+                            fn_kwargs={"zones": zones})
+        tmp = os.path.join(args.out, f"_pass{i}")
+        ds.write_parquet(tmp)
+        for f in os.listdir(tmp):
+            if f.endswith(".parquet"):
+                os.replace(os.path.join(tmp, f), os.path.join(args.out, f"p{i}_{f}"))
+        shutil.rmtree(tmp)
 
-    ds = ds.map_batches(cleanse, batch_format="pandas", batch_size=BATCH,
-                        fn_kwargs={"sample": args.sample})
-    try:
-        ds = ds.repartition(args.partitions, keys=["row_hash"], shuffle=True)
-        ds = ds.map_batches(drop_dupes, batch_format="pandas", batch_size=None)
-    except (TypeError, ValueError):
-        print("WARNING: this Ray version lacks repartition(keys=...). "
-              "Only per-block dedup is done. Upgrade: pip install -U 'ray[data]'")
-        ds = ds.map_batches(drop_dupes, batch_format="pandas", batch_size=BATCH)
-
-    ds = ds.map_batches(transform, batch_format="pandas", batch_size=BATCH,
-                        fn_kwargs={"zones": zones})
-
-    ds.write_parquet(args.out)
     elapsed = time.perf_counter() - t0
 
     out_ds = ray.data.read_parquet(args.out)
@@ -129,7 +146,7 @@ def main():
 
     print(f"\n[RAY] rows_in={rows_in:,} rows_out={rows_out:,} elapsed={elapsed:.1f}s")
     common.save_result("ray", {
-        "engine": "ray", "sample": args.sample, "rows_in_raw": rows_in,
+        "engine": "ray", "sample": args.sample, "passes": args.passes, "rows_in_raw": rows_in,
         "rows_out": rows_out, "elapsed_sec": round(elapsed, 2),
     })
     ray.shutdown()

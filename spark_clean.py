@@ -46,6 +46,7 @@ def main():
     p = common.base_parser("Spark pipeline")
     common.add_spark_args(p)
     args = p.parse_args()
+    common.absolutize(args)
 
     spark = common.make_spark("A3-Spark", args)
 

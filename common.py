@@ -102,3 +102,11 @@ def make_spark(app, args):
     spark.sparkContext.setLogLevel("WARN")
     spark.sparkContext.addPyFile(os.path.abspath("common.py"))
     return spark
+
+
+def absolutize(args):
+    for k in ("data_dir", "zones", "out", "input"):
+        v = getattr(args, k, None)
+        if v:
+            setattr(args, k, os.path.abspath(v))
+    return args
