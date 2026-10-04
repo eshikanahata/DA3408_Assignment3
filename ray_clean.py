@@ -50,8 +50,9 @@ def transform(df: pd.DataFrame, zones: pd.DataFrame) -> pd.DataFrame:
     df["speed_mph"] = common.compute_speed(df["trip_miles"], df["trip_time_sec"])
     df = df.dropna(subset=["speed_mph"])
     df["pickup_hour"] = df["pickup_datetime"].dt.hour.astype("int32")
-    df["pickup_dow"] = ((df["pickup_datetime"].dt.dayofweek + 1) % 7 + 1).astype("int32")  # 1=Sun..7=Sat
-    df["is_weekend"] = df["pickup_dow"].isin([1, 7]).astype("int32")
+    dow = df["pickup_datetime"].dt.dayofweek.to_numpy(dtype="int64")
+    df["pickup_dow"] = ((dow + 1) % 7 + 1).astype("int32")
+    df["is_weekend"] = ((df["pickup_dow"].to_numpy() == 1) | (df["pickup_dow"].to_numpy() == 7)).astype("int32")
     return df[common.FINAL_COLS]
 
 
