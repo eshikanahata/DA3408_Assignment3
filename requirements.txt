@@ -1,0 +1,7 @@
+pyspark
+pandas
+pyarrow
+numpy
+ray[default]>=2.46
+psutil
+matplotlib
